@@ -1,78 +1,114 @@
-from flask import Flask, Response, request, jsonify, render_template_string
-from ultralytics import YOLO
-import cv2
-import numpy as np
-import base64
-import threading
+from flask import Flask, render_template_string
 
 app = Flask(__name__)
 
-# Load YOLO once. This app does not open the laptop webcam.
-model = YOLO("yolov8n.pt")
-model_lock = threading.Lock()
-
-OBSTACLE_CLASSES = {
-    "person", "bottle", "chair", "car", "dog",
-    "cat", "refrigerator", "laptop", "backpack",
-    "suitcase", "cup", "book", "cell phone"
-}
-
-PAGE = """
+PAGE = r"""
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI Robot - Phone Camera</title>
+<title>AI Object Detection Robot</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+
 <style>
+* { box-sizing: border-box; }
+
 body {
-    margin: 0; padding: 18px;
-    background: #101827; color: white;
-    font-family: Arial, sans-serif; text-align: center;
+    margin: 0;
+    padding: 18px;
+    background: #101827;
+    color: white;
+    font-family: Arial, sans-serif;
+    text-align: center;
 }
+
 .container {
-    max-width: 720px; margin: auto; padding: 18px;
-    background: #1e293b; border-radius: 16px;
+    max-width: 720px;
+    margin: auto;
+    padding: 18px;
+    background: #1e293b;
+    border-radius: 16px;
 }
+
 h1 { color: #38bdf8; }
-video, canvas {
-    width: 100%; max-width: 640px;
-    border-radius: 12px; background: black;
+
+.camera-box {
+    position: relative;
+    width: 100%;
+    max-width: 640px;
+    margin: auto;
+    background: black;
+    border-radius: 12px;
+    overflow: hidden;
 }
-canvas { display: none; }
+
+video {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
 button, select {
-    margin: 5px; padding: 12px;
-    border: 0; border-radius: 8px; font-size: 16px;
+    margin: 5px;
+    padding: 12px;
+    border: 0;
+    border-radius: 8px;
+    font-size: 16px;
 }
-button { background: #0284c7; color: white; }
-#status { font-weight: bold; color: #86efac; }
+
+button {
+    background: #0284c7;
+    color: white;
+    cursor: pointer;
+}
+
+button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+#status { color: #86efac; font-weight: bold; }
+#obstacle { font-weight: bold; }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3"></script>
 </head>
+
 <body>
 <div class="container">
-<h1>AI Object Detection Robot</h1>
-<p>Phone camera with YOLO detection</p>
+    <h1>AI Object Detection Robot</h1>
+    <p>Browser-based AI camera detection</p>
 
-<video id="video" autoplay playsinline muted></video>
-<canvas id="canvas"></canvas>
+    <div class="camera-box">
+        <video id="video" autoplay playsinline muted></video>
+        <canvas id="canvas"></canvas>
+    </div>
 
-<div>
-<select id="camera">
-    <option value="environment">Back Camera</option>
-    <option value="user">Front Camera</option>
-</select>
-</div>
-<div>
-<button id="start">Start Camera</button>
-<button id="switch">Switch Camera</button>
-<button id="stop">Stop Camera</button>
-</div>
+    <div>
+        <select id="camera">
+            <option value="environment">Back Camera</option>
+            <option value="user">Front Camera</option>
+        </select>
+    </div>
 
-<p id="status">Camera stopped</p>
-<p id="objects">Detected objects: —</p>
-<p id="obstacle">Obstacle status: —</p>
+    <div>
+        <button id="start">Start Camera</button>
+        <button id="switch">Switch Camera</button>
+        <button id="stop">Stop Camera</button>
+    </div>
+
+    <p id="status">Loading AI model...</p>
+    <p id="objects">Detected objects: —</p>
+    <p id="obstacle">Obstacle status: —</p>
 </div>
 
 <script>
@@ -83,21 +119,49 @@ const cameraSelect = document.getElementById("camera");
 const statusText = document.getElementById("status");
 const objectsText = document.getElementById("objects");
 const obstacleText = document.getElementById("obstacle");
+const startButton = document.getElementById("start");
+const switchButton = document.getElementById("switch");
 
+const OBSTACLE_CLASSES = new Set([
+    "person", "bottle", "chair", "car", "dog", "cat",
+    "refrigerator", "laptop", "backpack", "suitcase",
+    "cup", "book", "cell phone", "bus", "truck",
+    "bicycle", "motorcycle", "potted plant", "bench"
+]);
+
+let model = null;
 let stream = null;
 let running = false;
 let busy = false;
-let lastSent = 0;
+let session = 0;
+let lastDetection = 0;
+
+async function loadModel() {
+    try {
+        statusText.textContent = "Loading browser AI model...";
+        model = await cocoSsd.load({ base: "lite_mobilenet_v2" });
+        statusText.textContent = "AI model ready. Start the camera.";
+    } catch (error) {
+        statusText.textContent =
+            "AI model failed to load. Check your internet connection and refresh.";
+        console.error("Model loading error:", error);
+    }
+}
 
 async function startCamera() {
     stopCamera();
 
-    if (!navigator.mediaDevices ||
-        !navigator.mediaDevices.getUserMedia) {
-        statusText.textContent =
-            "Camera unavailable. Open this site using HTTPS.";
+    if (!model) {
+        statusText.textContent = "Please wait for the AI model to load.";
         return;
     }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+        statusText.textContent = "Camera requires HTTPS and browser permission.";
+        return;
+    }
+
+    const currentSession = session;
 
     try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -109,19 +173,28 @@ async function startCamera() {
             }
         });
 
+        if (currentSession !== session) {
+            stream.getTracks().forEach(track => track.stop());
+            return;
+        }
+
         video.srcObject = stream;
         await video.play();
+
+        if (currentSession !== session) return;
+
         running = true;
-        statusText.textContent = "Camera running";
+        lastDetection = 0;
+        statusText.textContent = "Camera running. Detecting objects...";
         requestAnimationFrame(processFrame);
     } catch (error) {
-        statusText.textContent =
-            "Camera error: " + error.name +
-            ". Allow camera permission and use HTTPS.";
+        statusText.textContent = "Camera error: " + error.message;
+        console.error("Camera error:", error);
     }
 }
 
 function stopCamera() {
+    session++;
     running = false;
 
     if (stream) {
@@ -130,86 +203,124 @@ function stopCamera() {
     }
 
     video.srcObject = null;
-    statusText.textContent = "Camera stopped";
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    objectsText.textContent = "Detected objects: —";
+    obstacleText.textContent = "Obstacle status: —";
+    obstacleText.style.color = "white";
+    statusText.textContent = model
+        ? "Camera stopped"
+        : "Loading AI model...";
 }
 
 async function processFrame(timestamp) {
-    if (!running) return;
-
-    if (timestamp - lastSent > 350 && !busy &&
-        video.readyState >= 2) {
-        lastSent = timestamp;
-        busy = true;
-
-        try {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-            const image = canvas.toDataURL("image/jpeg", 0.7);
-
-            const response = await fetch("/detect", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ image })
-            });
-
-            const data = await response.json();
-
-            if (data.error) {
-                statusText.textContent = data.error;
-            } else {
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-                for (const item of data.detections) {
-                    ctx.strokeStyle = item.obstacle ? "#ff4040" : "#38bdf8";
-                    ctx.lineWidth = 3;
-                    ctx.strokeRect(item.x1, item.y1,
-                                   item.x2 - item.x1,
-                                   item.y2 - item.y1);
-
-                    ctx.fillStyle = ctx.strokeStyle;
-                    ctx.font = "16px Arial";
-                    ctx.fillText(
-                        item.name + " " + item.confidence,
-                        item.x1, Math.max(18, item.y1 - 5)
-                    );
-                }
-
-                video.style.display = "none";
-                canvas.style.display = "block";
-
-                objectsText.textContent =
-                    "Detected objects: " +
-                    (data.objects.join(", ") || "None");
-
-                obstacleText.textContent =
-                    "Obstacle status: " +
-                    (data.obstacle ? "OBSTACLE AHEAD" : "PATH CLEAR");
-
-                obstacleText.style.color =
-                    data.obstacle ? "#ff6464" : "#86efac";
-            }
-        } catch (error) {
-            statusText.textContent = "Detection connection error:" + error.message;
-        } finally {
-            busy = false;
-        }
+    if (!running || busy) {
+        if (running) requestAnimationFrame(processFrame);
+        return;
     }
 
-    if (running) requestAnimationFrame(processFrame);
+    if (video.readyState < 2 || timestamp - lastDetection < 250) {
+        requestAnimationFrame(processFrame);
+        return;
+    }
+
+    busy = true;
+    lastDetection = timestamp;
+    const currentSession = session;
+
+    try {
+        const predictions = await model.detect(video);
+
+        if (!running || currentSession !== session) return;
+
+        const width = video.videoWidth;
+        const height = video.videoHeight;
+
+        if (!width || !height) return;
+
+        if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+        }
+
+        ctx.clearRect(0, 0, width, height);
+
+        const detectedNames = new Set();
+        let obstacleAhead = false;
+
+        for (const item of predictions) {
+            if (item.score < 0.45) continue;
+
+            const [x, y, w, h] = item.bbox;
+            const name = item.class;
+            const centerX = x + w / 2;
+
+            const isObstacle =
+                OBSTACLE_CLASSES.has(name) &&
+                centerX >= width / 3 &&
+                centerX <= (2 * width) / 3;
+
+            if (isObstacle) obstacleAhead = true;
+            detectedNames.add(name);
+
+            ctx.strokeStyle = isObstacle ? "#ff4040" : "#38bdf8";
+            ctx.lineWidth = 3;
+            ctx.strokeRect(x, y, w, h);
+
+            const label =
+                name + " " + Math.round(item.score * 100) + "%";
+            ctx.font = "16px Arial";
+
+            const labelY = Math.max(18, y - 5);
+            ctx.fillStyle = isObstacle ? "#ff4040" : "#0284c7";
+            ctx.fillRect(
+                x,
+                labelY - 17,
+                Math.min(ctx.measureText(label).width + 8, width - x),
+                21
+            );
+
+            ctx.fillStyle = "white";
+            ctx.fillText(label, x + 4, labelY - 2);
+        }
+
+        objectsText.textContent =
+            "Detected objects: " +
+            ([...detectedNames].join(", ") || "None");
+
+        obstacleText.textContent =
+            "Obstacle status: " +
+            (obstacleAhead ? "OBSTACLE AHEAD" : "PATH CLEAR");
+
+        obstacleText.style.color =
+            obstacleAhead ? "#ff6464" : "#86efac";
+
+        statusText.textContent = "Browser AI detection running";
+    } catch (error) {
+        if (currentSession === session) {
+            statusText.textContent = "Detection error: " + error.message;
+            console.error("Detection error:", error);
+        }
+    } finally {
+        busy = false;
+        if (running && currentSession === session) {
+            requestAnimationFrame(processFrame);
+        }
+    }
 }
 
-document.getElementById("start").onclick = startCamera;
+startButton.onclick = startCamera;
 document.getElementById("stop").onclick = stopCamera;
-document.getElementById("switch").onclick = async () => {
+
+switchButton.onclick = async () => {
     cameraSelect.value =
         cameraSelect.value === "environment" ? "user" : "environment";
     await startCamera();
 };
-cameraSelect.onchange = startCamera;
 
+cameraSelect.onchange = startCamera;
 window.addEventListener("pagehide", stopCamera);
+
+loadModel();
 </script>
 </body>
 </html>
@@ -221,74 +332,8 @@ def home():
     return render_template_string(PAGE)
 
 
-@app.route("/detect", methods=["POST"])
-def detect():
-    try:
-        payload = request.get_json(silent=True) or {}
-        image_data = payload.get("image", "")
-
-        if "," not in image_data:
-            return jsonify({"error": "No camera frame received"}), 400
-
-        raw = base64.b64decode(image_data.split(",", 1)[1])
-        frame = cv2.imdecode(
-            np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR
-        )
-
-        if frame is None:
-            return jsonify({"error": "Invalid camera frame"}), 400
-
-        height, width = frame.shape[:2]
-        detections = []
-        detected_objects = []
-        obstacle_ahead = False
-
-        with model_lock:
-            result = model(frame, verbose=False)[0]
-
-        for box in result.boxes:
-            confidence = float(box.conf[0])
-            if confidence < 0.35:
-                continue
-
-            class_id = int(box.cls[0])
-            name = model.names[class_id]
-            x1, y1, x2, y2 = map(
-                int, box.xyxy[0].tolist()
-            )
-
-            is_obstacle = (
-                name in OBSTACLE_CLASSES
-                and width // 3 <= (x1 + x2) // 2 <= 2 * width // 3
-            )
-
-            if is_obstacle:
-                obstacle_ahead = True
-
-            if name not in detected_objects:
-                detected_objects.append(name)
-
-            detections.append({
-                "name": name,
-                "confidence": round(confidence, 2),
-                "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                "obstacle": is_obstacle
-            })
-
-        return jsonify({
-            "detections": detections,
-            "objects": detected_objects,
-            "obstacle": obstacle_ahead
-        })
-
-    except Exception as error:
-        app.logger.exception("Detection failed")
-        return jsonify({"error": "Detection failed on server"}), 500
-
-
 if __name__ == "__main__":
     import os
-
     app.run(
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 10000)),
