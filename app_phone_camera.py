@@ -191,7 +191,7 @@ async function processFrame(timestamp) {
                     data.obstacle ? "#ff6464" : "#86efac";
             }
         } catch (error) {
-            statusText.textContent = "Detection connection error";
+            statusText.textContent = "Detection connection error:" + error.message;
         } finally {
             busy = false;
         }
