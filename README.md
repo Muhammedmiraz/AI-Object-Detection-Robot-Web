@@ -66,6 +66,36 @@ Note: Camera access generally requires HTTPS or localhost. The application also 
 
 ![AI Object Detection Robot Demo](ai-robot-demo-showcase.png)
 
+🏗️ Project Architecture
+
+User
+  |
+  v
+Web Browser
+  |
+  +--> Camera Access (JavaScript)
+  |
+  +--> TensorFlow.js + COCO-SSD
+  |       |
+  |       +--> Object Detection
+  |       +--> Bounding Boxes
+  |       +--> Object Labels and Confidence
+  |
+  +--> Obstacle Status Display
+  |
+  v
+Mobile-Friendly Web Interface
+
+Detection Workflow
+
+1. The user grants permission to access the camera.
+2. JavaScript captures frames from the camera.
+3. TensorFlow.js runs the COCO-SSD model in the browser.
+4. The interface draws bounding boxes and labels around detected objects.
+5. A rule-based check displays the potential obstacle status.
+
+Note: This web version demonstrates camera-based object detection. It does not directly control a physical robot.
+
 🎯 Project Objective
 
 To explore computer vision, browser-based machine learning, camera integration, and mobile-friendly AI application development.
