@@ -285,11 +285,11 @@ def detect():
 
 
 if __name__ == "__main__":
-    # HTTPS enables phone camera access
+    import os
+
     app.run(
         host="0.0.0.0",
-        port=5001,
+        port=int(os.environ.get("PORT", 10000)),
         debug=False,
-        threaded=True,
-        ssl_context=("phone-camera.pem", "phone-camera-key.pem")
+        threaded=True
     )
