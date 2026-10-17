@@ -62,6 +62,10 @@ Note: Camera access generally requires HTTPS or localhost. The application also 
 * Camera access requires user permission.
 * Obstacle detection is a demonstration and is not safety-certified for controlling a physical robot.
 
+## 📸 Project Showcase
+
+![AI Object Detection Robot Demo](ai-robot-demo-showcase.png)
+
 🎯 Project Objective
 
 To explore computer vision, browser-based machine learning, camera integration, and mobile-friendly AI application development.
