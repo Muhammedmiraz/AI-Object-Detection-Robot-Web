@@ -47,6 +47,8 @@ button, select {
 button { background: #0284c7; color: white; }
 #status { font-weight: bold; color: #86efac; }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3"></script>
 </head>
 <body>
 <div class="container">
